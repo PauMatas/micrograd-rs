@@ -1,8 +1,7 @@
 use std::fmt::Debug;
 use std::fmt::Display;
 use std::ops::Add;
-//use std::ops::Deref;
-//use std::ops::Mul;
+use std::ops::Mul;
 use std::rc::Rc;
 use std::cell::RefCell;
 use std::vec;
@@ -42,21 +41,34 @@ impl Value {
 
 impl ValueRef {
     pub fn set_grad(&self, new_grad: f64) {
-        let mut value = self.inner.borrow_mut();
-        value.grad = new_grad;
+        {
+            let mut value = self.inner.borrow_mut();
+            value.grad = new_grad;
 
-        let parents = value._parents.clone();
+            let parents = value._parents.clone();
 
-        if value._operation == "+" {
-            value.backward = Box::new(move || {
-                for p in &parents {
-                    p.borrow_mut().grad += new_grad
-                }
-            })
-        } else if value._operation == "*" {
-            todo!()
-        } else {
-            todo!()
+            if value._operation == "+" {
+                value.backward = Box::new(move || {
+                    for p in &parents {
+                        p.borrow_mut().grad += new_grad
+                    }
+                })
+            } else if value._operation == "*" {
+                value.backward = Box::new(move || {
+                    if Rc::ptr_eq(&parents[0], &parents[1]) {
+                        let mut p = parents[0].borrow_mut();
+                        p.grad += 2.0 * p.data * new_grad
+                    } else {
+                        let mut p0 = parents[0].borrow_mut();
+                        let mut p1 = parents[1].borrow_mut();
+
+                        p0.grad += p1.data * new_grad;
+                        p1.grad += p0.data * new_grad;
+                    }
+                })
+            } else {
+                todo!()
+            }
         }
     }
 }
@@ -128,68 +140,69 @@ impl Add for &ValueRef {
     }
 }
 
-//impl Add<f64> for &Value {
-//    type Output = Value;
-//
-//    fn add(self, other: f64) -> Value {
-//        let other_value = Value::new(other);
-//        self + &other_value
-//    }
-//}
-//
-//impl Add<&Value> for f64 {
-//    type Output = Value;
-//
-//    fn add(self, other: &Value) -> Value {
-//        other + self
-//    }
-//}
-//
-//impl Mul for &Value {
-//    type Output = Value;
-//
-//    fn mul(self, other: &Value) -> Value {
-//        let out = Value(Rc::new(ValueNode {
-//            data: self.data * other.data,
-//            grad: 0.0,
-//            _parents: vec![self.0.clone(), other.0.clone()],
-//            _operation: "*",
-//            backward: Box::new(|| {})
-//        }));
-//
-//        let self_ = self.clone();
-//        let other_ = other.clone();
-//        let out_ = out.clone();
-//
-//        out.0.borrow_mut().backward = Box::new(move || {
-//            let out_grad = out_.0.borrow().grad;
-//            let self_data = self_.0.borrow().data;
-//            let other_data = other_.0.borrow().data;
-//
-//            self_.0.borrow_mut().grad += other_data * out_grad;
-//            other_.0.borrow_mut().grad += self_data * out_grad;
-//        });
-//
-//        out
-//    }
-//}
-//
-//impl Mul<f64> for &Value {
-//    type Output = Value;
-//
-//    fn mul(self, other: f64) -> Value {
-//        let other_value = Value::new(other);
-//        self * &other_value
-//    }
-//}
-//
-//impl Mul<&Value> for f64 {
-//    type Output = Value;
-//
-//    fn mul(self, other: &Value) -> Value {
-//        other * self
-//    }
-//}
+impl Add<f64> for &ValueRef {
+    type Output = ValueRef;
+
+    fn add(self, other: f64) -> ValueRef {
+        let other_value_ref: ValueRef = Value::new(other);
+        self + &other_value_ref
+    }
+}
+
+impl Add<&ValueRef> for f64 {
+    type Output = ValueRef;
+
+    fn add(self, other: &ValueRef) -> ValueRef {
+        other + self
+    }
+}
+
+impl Mul for &ValueRef {
+    type Output = ValueRef;
+
+    fn mul(self, other: &ValueRef) -> ValueRef {
+        let out = Rc::new(RefCell::new(Value {
+            data: self.inner.borrow().data * other.inner.borrow().data,
+            grad: 0.0,
+            _parents: vec![self.inner.clone(), other.inner.clone()],
+            _operation: "*",
+            backward: Box::new(|| {})
+        }));
+
+        let a = self.clone();
+        let b = other.clone();
+        let out_rc = out.clone();
+
+        out.borrow_mut().backward = Box::new(move || {
+            let g = out_rc.borrow().grad;
+
+            let mut a_borrowed = a.inner.borrow_mut();
+            let mut b_borrowed = b.inner.borrow_mut();
+
+            a_borrowed.grad += b_borrowed.data * g;
+            b_borrowed.grad += a_borrowed.data * g;
+        });
+        
+        ValueRef { inner: out }
+    }
+}
+
+impl Mul<f64> for &ValueRef {
+    type Output = ValueRef;
+
+    fn mul(self, other: f64) -> ValueRef {
+        let other_value_ref: ValueRef = Value::new(other);
+        self * &other_value_ref
+    }
+}
+
+impl Mul<&ValueRef> for f64 {
+    type Output = ValueRef;
+
+    fn mul(self, other: &ValueRef) -> ValueRef {
+        other * self
+    }
+}
 
 fn main() {
     let a = Value::new(2.0);
@@ -256,29 +269,55 @@ mod tests {
         assert_eq!(a.inner.borrow().grad, 2.0);
     }
 
-    //#[test]
-    //fn test_value_sum_with_float() {
-    //    let a = Value::new(1.0);
-    //    let b = &a + 2.0;
-    //    assert_eq!(b.data, 3.0);
-    //    let c = 2.0 + &a;
-    //    assert_eq!(c.data, 3.0);
-    //}
-    //
-    //#[test]
-    //fn test_value_mul() {
-    //    let a = Value::new(2.0);
-    //    let b = Value::new(3.0);
-    //    let c = &a * &b;
-    //    assert_eq!(c.data, 6.0);
-    //}
-    //
-    //#[test]
-    //fn test_value_mul_with_float() {
-    //    let a = Value::new(3.0);
-    //    let b = &a * 2.0;
-    //    assert_eq!(b.data, 6.0);
-    //    let c = 2.0 * &a;
-    //    assert_eq!(c.data, 6.0);
-    //}
+    #[test]
+    fn test_value_sum_with_float() {
+        let a = Value::new(1.0);
+        let b = &a + 2.0;
+        assert_eq!(b.inner.borrow().data, 3.0);
+        let c = 2.0 + &a;
+        assert_eq!(c.inner.borrow().data, 3.0);
+    }
+
+    #[test]
+    fn test_value_mul() {
+        let a = Value::new(2.0);
+        let b = Value::new(3.0);
+        let c = &a * &b;
+        assert_eq!(c.inner.borrow().data, 6.0);
+    }
+
+    #[test]
+    fn test_valueref_mul_backward() {
+        let a: ValueRef = Value::new(1.0);
+        let b: ValueRef = Value::new(2.0);
+        let c: ValueRef = &a * &b;
+
+        c.set_grad(1.0);
+
+        (c.inner.borrow_mut().backward)();
+
+        assert_eq!(a.inner.borrow().grad, 2.0);
+        assert_eq!(b.inner.borrow().grad, 1.0);
+    }
+
+    #[test]
+    fn test_valueref_mul_of_equal_values_backward() {
+        let a: ValueRef = Value::new(3.0);
+        let c: ValueRef = &a * &a;
+
+        c.set_grad(1.0);
+
+        (c.inner.borrow_mut().backward)();
+
+        assert_eq!(a.inner.borrow().grad, 6.0);
+    }
+
+    #[test]
+    fn test_value_mul_with_float() {
+        let a = Value::new(3.0);
+        let b = &a * 2.0;
+        assert_eq!(b.inner.borrow().data, 6.0);
+        let c = 2.0 * &a;
+        assert_eq!(c.inner.borrow().data, 6.0);
+    }
 }
