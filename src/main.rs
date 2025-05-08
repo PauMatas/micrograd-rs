@@ -11,7 +11,7 @@ struct Value {
     grad: f64,
     _parents: Vec<Rc<RefCell<Value>>>,
     _operation: &'static str,
-    backward: Box<dyn FnMut()>,
+    _backward: Box<dyn FnMut()>,
 }
 
 impl PartialEq for Value {
@@ -33,7 +33,7 @@ impl Value {
                 grad: 0.0,
                 _operation: "",
                 _parents: vec![],
-                backward: Box::new(|| {}),
+                _backward: Box::new(|| {}),
             }))
         }
     }
@@ -48,13 +48,13 @@ impl ValueRef {
             let parents = value._parents.clone();
 
             if value._operation == "+" {
-                value.backward = Box::new(move || {
+                value._backward = Box::new(move || {
                     for p in &parents {
                         p.borrow_mut().grad += new_grad
                     }
                 })
             } else if value._operation == "*" {
-                value.backward = Box::new(move || {
+                value._backward = Box::new(move || {
                     if Rc::ptr_eq(&parents[0], &parents[1]) {
                         let mut p = parents[0].borrow_mut();
                         p.grad += 2.0 * p.data * new_grad
@@ -123,14 +123,14 @@ impl Add for &ValueRef {
             grad: 0.0,
             _operation: "+",
             _parents: vec![self.inner.clone(), other.inner.clone()],
-            backward: Box::new(|| {}),
+            _backward: Box::new(|| {}),
         }));
 
         let a = self.clone();
         let b = other.clone();
         let out_rc = out.clone();
 
-        out.borrow_mut().backward = Box::new(move || {
+        out.borrow_mut()._backward = Box::new(move || {
             let g = out_rc.borrow().grad;
             a.inner.borrow_mut().grad += g;
             b.inner.borrow_mut().grad += g;
@@ -166,14 +166,14 @@ impl Mul for &ValueRef {
             grad: 0.0,
             _parents: vec![self.inner.clone(), other.inner.clone()],
             _operation: "*",
-            backward: Box::new(|| {})
+            _backward: Box::new(|| {})
         }));
 
         let a = self.clone();
         let b = other.clone();
         let out_rc = out.clone();
 
-        out.borrow_mut().backward = Box::new(move || {
+        out.borrow_mut()._backward = Box::new(move || {
             let g = out_rc.borrow().grad;
 
             let mut a_borrowed = a.inner.borrow_mut();
@@ -213,13 +213,13 @@ fn main() {
         grad: 0.0,
         _operation: "+",
         _parents: vec![a.inner.clone(), b.inner.clone()],
-        backward: Box::new(|| {}),
+        _backward: Box::new(|| {}),
     }));
 
     let c = ValueRef { inner: c_value };
     c.set_grad(1.0);
     
-    (c.inner.borrow_mut().backward)();
+    (c.inner.borrow_mut()._backward)();
 
     println!("a: {}, b: {}", a, b);
     println!("{:?}", c);
@@ -251,7 +251,7 @@ mod tests {
 
         c.set_grad(1.0);
 
-        (c.inner.borrow_mut().backward)();
+        (c.inner.borrow_mut()._backward)();
 
         assert_eq!(a.inner.borrow().grad, 1.0);
         assert_eq!(b.inner.borrow().grad, 1.0);
@@ -264,7 +264,7 @@ mod tests {
 
         c.set_grad(1.0);
 
-        (c.inner.borrow_mut().backward)();
+        (c.inner.borrow_mut()._backward)();
 
         assert_eq!(a.inner.borrow().grad, 2.0);
     }
@@ -294,7 +294,7 @@ mod tests {
 
         c.set_grad(1.0);
 
-        (c.inner.borrow_mut().backward)();
+        (c.inner.borrow_mut()._backward)();
 
         assert_eq!(a.inner.borrow().grad, 2.0);
         assert_eq!(b.inner.borrow().grad, 1.0);
@@ -307,7 +307,7 @@ mod tests {
 
         c.set_grad(1.0);
 
-        (c.inner.borrow_mut().backward)();
+        (c.inner.borrow_mut()._backward)();
 
         assert_eq!(a.inner.borrow().grad, 6.0);
     }
