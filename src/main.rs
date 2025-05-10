@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::fmt::Debug;
 use std::fmt::Display;
 use std::ops::Add;
@@ -11,7 +12,7 @@ struct Value {
     grad: f64,
     _parents: Vec<Rc<RefCell<Value>>>,
     _operation: &'static str,
-    _backward: Box<dyn FnMut()>,
+    _backward: Box<dyn FnMut(f64)>,
 }
 
 impl PartialEq for Value {
@@ -33,7 +34,7 @@ impl Value {
                 grad: 0.0,
                 _operation: "",
                 _parents: vec![],
-                _backward: Box::new(|| {}),
+                _backward: Box::new(|_: f64| {}),
             }))
         }
     }
@@ -41,35 +42,54 @@ impl Value {
 
 impl ValueRef {
     pub fn set_grad(&self, new_grad: f64) {
-        {
-            let mut value = self.inner.borrow_mut();
-            value.grad = new_grad;
+        self.inner.borrow_mut().grad = new_grad
+    }
 
-            let parents = value._parents.clone();
+    pub fn add_to_grad(&self, sum_to_grad: f64) {
+        let g = {
+            self.inner.borrow().grad
+        };
+        self.set_grad(g + sum_to_grad);
+    }
 
-            if value._operation == "+" {
-                value._backward = Box::new(move || {
-                    for p in &parents {
-                        p.borrow_mut().grad += new_grad
-                    }
-                })
-            } else if value._operation == "*" {
-                value._backward = Box::new(move || {
-                    if Rc::ptr_eq(&parents[0], &parents[1]) {
-                        let mut p = parents[0].borrow_mut();
-                        p.grad += 2.0 * p.data * new_grad
-                    } else {
-                        let mut p0 = parents[0].borrow_mut();
-                        let mut p1 = parents[1].borrow_mut();
+    pub fn get_parents_topo_sort(&self) -> Vec<ValueRef> {
+        let mut topo: Vec<ValueRef> = Vec::new();
+        let mut visited: HashSet<*const RefCell<Value>> = HashSet::new();
+        
+        build_topo(self, &mut visited, &mut topo);
 
-                        p0.grad += p1.data * new_grad;
-                        p1.grad += p0.data * new_grad;
-                    }
-                })
-            } else {
-                todo!()
-            }
+        topo
+    }
+
+    pub fn backward(&self) {
+        self.clear_grads();
+        self.set_grad(1.0);
+        let topo: Vec<ValueRef> = self.get_parents_topo_sort();
+        for value_ref in topo.into_iter().rev() {
+            let g = {
+                value_ref.inner.borrow().grad
+            };
+            (value_ref.inner.borrow_mut()._backward)(g);
         }
+    }
+
+    pub fn clear_grads(&self) {
+        let topo: Vec<ValueRef> = self.get_parents_topo_sort();
+        for value_ref in topo {
+            value_ref.set_grad(0.0);
+        };
+    }
+}
+
+fn build_topo(value_ref: &ValueRef, visited: &mut HashSet<*const RefCell<Value>>, topo: &mut Vec<ValueRef>) {
+    let ptr = Rc::as_ptr(&value_ref.inner);
+    if !visited.contains(&ptr) {
+        visited.insert(ptr);
+        for parent_rc in &value_ref.inner.borrow()._parents {
+            let parent = ValueRef { inner: parent_rc.clone() };
+            build_topo(&parent, visited, topo);
+        };
+        topo.push(value_ref.clone());
     }
 }
 
@@ -118,25 +138,23 @@ impl Add for &ValueRef {
     type Output = ValueRef;
 
     fn add(self, other: &ValueRef) -> ValueRef {
-        let out = Rc::new(RefCell::new(Value {
+        let out_rc = Rc::new(RefCell::new(Value {
             data: self.inner.borrow().data + other.inner.borrow().data,
             grad: 0.0,
             _operation: "+",
             _parents: vec![self.inner.clone(), other.inner.clone()],
-            _backward: Box::new(|| {}),
+            _backward: Box::new(|_: f64| {}),
         }));
 
         let a = self.clone();
         let b = other.clone();
-        let out_rc = out.clone();
 
-        out.borrow_mut()._backward = Box::new(move || {
-            let g = out_rc.borrow().grad;
-            a.inner.borrow_mut().grad += g;
-            b.inner.borrow_mut().grad += g;
+        out_rc.borrow_mut()._backward = Box::new(move |g: f64| {
+            a.add_to_grad(g);
+            b.add_to_grad(g);
         });
         
-        ValueRef { inner: out }
+        ValueRef { inner: out_rc }
     }
 }
 
@@ -166,21 +184,21 @@ impl Mul for &ValueRef {
             grad: 0.0,
             _parents: vec![self.inner.clone(), other.inner.clone()],
             _operation: "*",
-            _backward: Box::new(|| {})
+            _backward: Box::new(|_: f64| {})
         }));
 
         let a = self.clone();
         let b = other.clone();
-        let out_rc = out.clone();
 
-        out.borrow_mut()._backward = Box::new(move || {
-            let g = out_rc.borrow().grad;
-
-            let mut a_borrowed = a.inner.borrow_mut();
-            let mut b_borrowed = b.inner.borrow_mut();
-
-            a_borrowed.grad += b_borrowed.data * g;
-            b_borrowed.grad += a_borrowed.data * g;
+        out.borrow_mut()._backward = Box::new(move |g: f64| {
+            let a_data = {
+                a.inner.borrow().data
+            };
+            let b_data = {
+                b.inner.borrow().data
+            };
+            a.add_to_grad(b_data * g);
+            b.add_to_grad(a_data * g);
         });
         
         ValueRef { inner: out }
@@ -205,24 +223,23 @@ impl Mul<&ValueRef> for f64 {
 }
 
 fn main() {
-    let a = Value::new(2.0);
-    let b = Value::new(3.0);
+    let x: ValueRef = Value::new(2.0);
+    let w: ValueRef = Value::new(1.0);
+    let b: ValueRef = Value::new(3.0);
 
-    let c_value = Rc::new(RefCell::new(Value {
-        data: a.inner.borrow().data + b.inner.borrow().data,
-        grad: 0.0,
-        _operation: "+",
-        _parents: vec![a.inner.clone(), b.inner.clone()],
-        _backward: Box::new(|| {}),
-    }));
+    let y: ValueRef = &(&x * &w) + &b;
 
-    let c = ValueRef { inner: c_value };
-    c.set_grad(1.0);
-    
-    (c.inner.borrow_mut()._backward)();
+    let i = Value::new(1.5);
+    let j = Value::new(4.0);
 
-    println!("a: {}, b: {}", a, b);
-    println!("{:?}", c);
+    let k = &(&i * &j) + &(&x * &x);
+
+    let result = &k * &y;
+
+    result.backward();
+
+    println!("x: {}, w: {}", x, w);
+    println!("{:?}", result);
 }
 
 #[cfg(test)]
@@ -249,9 +266,7 @@ mod tests {
         let b: ValueRef = Value::new(2.0);
         let c: ValueRef = &a + &b;
 
-        c.set_grad(1.0);
-
-        (c.inner.borrow_mut()._backward)();
+        c.backward();
 
         assert_eq!(a.inner.borrow().grad, 1.0);
         assert_eq!(b.inner.borrow().grad, 1.0);
@@ -262,9 +277,7 @@ mod tests {
         let a: ValueRef = Value::new(1.0);
         let c: ValueRef = &a + &a;
 
-        c.set_grad(1.0);
-
-        (c.inner.borrow_mut()._backward)();
+        c.backward();
 
         assert_eq!(a.inner.borrow().grad, 2.0);
     }
@@ -292,9 +305,7 @@ mod tests {
         let b: ValueRef = Value::new(2.0);
         let c: ValueRef = &a * &b;
 
-        c.set_grad(1.0);
-
-        (c.inner.borrow_mut()._backward)();
+        c.backward();
 
         assert_eq!(a.inner.borrow().grad, 2.0);
         assert_eq!(b.inner.borrow().grad, 1.0);
@@ -305,9 +316,7 @@ mod tests {
         let a: ValueRef = Value::new(3.0);
         let c: ValueRef = &a * &a;
 
-        c.set_grad(1.0);
-
-        (c.inner.borrow_mut()._backward)();
+        c.backward();
 
         assert_eq!(a.inner.borrow().grad, 6.0);
     }
@@ -319,5 +328,18 @@ mod tests {
         assert_eq!(b.inner.borrow().data, 6.0);
         let c = 2.0 * &a;
         assert_eq!(c.inner.borrow().data, 6.0);
+    }
+
+    #[test]
+    fn test_valueref_clear_grads() {
+        let a: ValueRef = Value::new(1.0);
+        let b: ValueRef = Value::new(2.0);
+        let c: ValueRef = &(&a + &b) * &a;
+
+        c.clear_grads();
+
+        assert_eq!(a.inner.borrow().grad, 0.0);
+        assert_eq!(b.inner.borrow().grad, 0.0);
+        assert_eq!(c.inner.borrow().grad, 0.0);
     }
 }
