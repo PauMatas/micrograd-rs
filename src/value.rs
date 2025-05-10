@@ -79,12 +79,27 @@ impl ValueRef {
         };
     }
 
-    pub fn pow<I>(&self, exp: I) -> ValueRef
-    where 
-        I: Into<ValueRef>,
-    {
-        let exp_value: &ValueRef = &exp.into();
-        ValueRef::new(self.inner.borrow().data.powf(exp_value.inner.borrow().data))
+    pub fn pow(&self, exp: f64) -> ValueRef {
+        ValueRef::new(self.inner.borrow().data.powf(exp))
+    }
+
+    pub fn relu(&self) -> ValueRef {
+        let self_data = self.inner.borrow().data;
+        let out_rc = Rc::new(RefCell::new(Value {
+            data: if self_data > 0.0 { self_data } else { 0.0 },
+            grad: 0.0,
+            operation: "ReLU",
+            parents: vec![self.inner.clone()],
+            backward: Box::new(|_: f64| {}),
+        }));
+
+        let a = self.clone();
+
+        out_rc.borrow_mut().backward = Box::new(move |g: f64| {
+            a.add_to_grad(if self_data > 0.0 { g } else { 0.0 });
+        });
+        
+        ValueRef { inner: out_rc }
     }
 }
 
@@ -424,8 +439,28 @@ mod tests {
         let a = ValueRef::new(2.0);
         let b = a.pow(3.0);
         assert_eq!(b.inner.borrow().data, 8.0);
-        let c = a.pow(a.clone());
-        assert_eq!(c.inner.borrow().data, 4.0);
+    }
+
+    #[test]
+    fn test_relu() {
+        let a = ValueRef::new(2.0);
+        let b = a.relu();
+        assert_eq!(b.inner.borrow().data, 2.0);
+        let c = (-&a).relu();
+        assert_eq!(c.inner.borrow().data, 0.0);
+    }
+
+    #[test]
+    fn test_relu_backward() {
+        let a = ValueRef::new(2.0);
+        let b = a.relu();
+        b.backward();
+        assert_eq!(a.inner.borrow().grad, 1.0);
+
+        let c = ValueRef::new(-2.0);
+        let d = c.relu();
+        d.backward();
+        assert_eq!(c.inner.borrow().grad, 0.0);
     }
 }
 
